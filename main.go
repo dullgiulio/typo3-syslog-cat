@@ -191,7 +191,13 @@ func (lr *LogRow) printRowsAsLogs(rows *sql.Rows) {
 		}
 
 		printedLineSkipped = true
-		fmt.Printf("%s %s\n", datetime.Format(time.RFC3339), str)
+
+		ipAddress := lr.values[11]
+		if ipAddress == "" {
+			ipAddress = "-"
+		}
+
+		fmt.Printf("%s [%s] %s\n", ipAddress, datetime.Format("02/Jan/2006:15:04:05 -0700"), str)
 	}
 }
 
