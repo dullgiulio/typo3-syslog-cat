@@ -155,6 +155,7 @@ func fail(err error) {
 type LogRow struct {
 	values  []string
 	ivalues []interface{}
+	verbose bool
 }
 
 func NewLogRow(n int) *LogRow {
@@ -169,36 +170,82 @@ func NewLogRow(n int) *LogRow {
 	return lr
 }
 
-func (lr *LogRow) printRowsAsLogs(rows *sql.Rows) {
-	var printedLineSkipped bool
+func (lr *LogRow) printRow() {
+	timeUnix, err := strconv.ParseInt(lr.values[8], 10, 64)
+	if err != nil && !lr.verbose {
+		fmt.Println(oneLineSkipped)
+		return
+	}
+	datetime := time.Unix(timeUnix, 0)
+
+	str, err := formatPhpString(lr.values[7], lr.values[12])
+	if err != nil && !lr.verbose {
+		fmt.Println(oneLineSkipped)
+		return
+	}
+
+	lr.verbose = true
+
+	ipAddress := lr.values[11]
+	if ipAddress == "" {
+		ipAddress = "-"
+	}
+
+	fmt.Printf("%s [%s] %s\n", ipAddress, datetime.Format("02/Jan/2006:15:04:05 -0700"), str)
+}
+
+type Tailer struct {
+	lastID chan int64
+	row	   *LogRow
+	db	   *sql.DB
+	tableName string
+	index string
+	order string
+}
+
+func NewTailer(db *sql.DB, initialID int64, tableName, index, order string) *Tailer {
+	t := &Tailer{
+		lastID: make(chan int64, 1), // Important: keep 1 as buffer size.
+		row:	NewLogRow(16),
+		tableName: tableName,
+		index: index,
+		order: order,
+		db: db,
+	}
+	t.lastID <- initialID
+
+	return t
+}
+
+func (t *Tailer) Tail(limit int) {
+	lastID := <-t.lastID
+
+	if limit <= 0 {
+		limit = 200
+	}
+
+	query := fmt.Sprintf("SELECT * FROM %s WHERE %s > ? ORDER BY %s ASC LIMIT %d", t.tableName, t.index, t.order, limit)
+	rows, err := t.db.Query(query, fmt.Sprintf("%d", lastID))
+	if err != nil {
+		fail(err)
+	}
+
+	defer rows.Close()
 
 	for rows.Next() {
-		if err := rows.Scan(lr.ivalues...); err != nil {
+		if err := rows.Scan(t.row.ivalues...); err != nil {
 			fail(err)
 		}
 
-		timeUnix, err := strconv.ParseInt(lr.values[8], 10, 64)
-		if err != nil && !printedLineSkipped {
-			fmt.Println(oneLineSkipped)
-			continue
+		t.row.printRow()
+
+		lastID, err = strconv.ParseInt(t.row.values[8], 10, 64)
+		if err != nil {
+			fail(err)
 		}
-		datetime := time.Unix(timeUnix, 0)
-
-		str, err := formatPhpString(lr.values[7], lr.values[12])
-		if err != nil && !printedLineSkipped {
-			fmt.Println(oneLineSkipped)
-			continue
-		}
-
-		printedLineSkipped = true
-
-		ipAddress := lr.values[11]
-		if ipAddress == "" {
-			ipAddress = "-"
-		}
-
-		fmt.Printf("%s [%s] %s\n", ipAddress, datetime.Format("02/Jan/2006:15:04:05 -0700"), str)
 	}
+
+	t.lastID <- lastID
 }
 
 func main() {
@@ -211,17 +258,13 @@ func main() {
 		fail(err)
 	}
 
-	rows, err := db.Query("SELECT * FROM sys_log ORDER BY tstamp DESC LIMIT 200")
-	if err != nil {
-		fail(err)
-	}
-
-	defer rows.Close()
-
-	lr := NewLogRow(16)
-	lr.printRowsAsLogs(rows)
-
 	// TODO: Update every second...
+	t := NewTailer(db, 0, "sys_log", "tstamp", "tstamp")
+
+	for {
+		t.Tail(200)
+		<-time.After(1 * time.Second)
+	}
 
 	os.Exit(0)
 }
