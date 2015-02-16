@@ -12,6 +12,8 @@ import (
 	_ "github.com/go-sql-driver/mysql"
 )
 
+const oneLineSkipped = "--- One line skipped ---"
+
 func formatGetVerbs(fmtstr string) (string, int, error) {
 	var insideVerb bool
 	var verbs int
@@ -168,24 +170,27 @@ func NewLogRow(n int) *LogRow {
 }
 
 func (lr *LogRow) printRowsAsLogs(rows *sql.Rows) {
+	var printedLineSkipped bool
+
 	for rows.Next() {
 		if err := rows.Scan(lr.ivalues...); err != nil {
 			fail(err)
 		}
 
 		timeUnix, err := strconv.ParseInt(lr.values[8], 10, 64)
-		if err != nil {
-			// TODO: Print skipped line...
+		if err != nil && !printedLineSkipped {
+			fmt.Println(oneLineSkipped)
 			continue
 		}
 		datetime := time.Unix(timeUnix, 0)
 
 		str, err := formatPhpString(lr.values[7], lr.values[12])
-		if err != nil {
-			// TODO: Print skipped line...
+		if err != nil && !printedLineSkipped {
+			fmt.Println(oneLineSkipped)
 			continue
 		}
 
+		printedLineSkipped = true
 		fmt.Printf("%s %s\n", datetime.Format(time.RFC3339), str)
 	}
 }
