@@ -201,9 +201,10 @@ type Tailer struct {
 	tableName string
 	index string
 	order string
+	query string
 }
 
-func NewTailer(db *sql.DB, initialID int64, tableName, index, order string) *Tailer {
+func NewTailer(db *sql.DB, limit int, initialID int64, tableName, index, order string) *Tailer {
 	t := &Tailer{
 		lastID: make(chan int64, 1), // Important: keep 1 as buffer size.
 		row:	NewLogRow(16),
@@ -212,20 +213,17 @@ func NewTailer(db *sql.DB, initialID int64, tableName, index, order string) *Tai
 		order: order,
 		db: db,
 	}
+
+	t.query = fmt.Sprintf("SELECT * FROM %s WHERE %s > ? ORDER BY %s ASC LIMIT %d", t.tableName, t.index, t.order, limit)
 	t.lastID <- initialID
 
 	return t
 }
 
-func (t *Tailer) Tail(limit int) {
+func (t *Tailer) Tail() {
 	lastID := <-t.lastID
 
-	if limit <= 0 {
-		limit = 200
-	}
-
-	query := fmt.Sprintf("SELECT * FROM %s WHERE %s > ? ORDER BY %s ASC LIMIT %d", t.tableName, t.index, t.order, limit)
-	rows, err := t.db.Query(query, fmt.Sprintf("%d", lastID))
+	rows, err := t.db.Query(t.query, lastID)
 	if err != nil {
 		fail(err)
 	}
@@ -248,6 +246,20 @@ func (t *Tailer) Tail(limit int) {
 	t.lastID <- lastID
 }
 
+func determineStartValue(db *sql.DB, limit int, tableName, index, order string) (value int64) {
+	query := fmt.Sprintf("SELECT %s FROM %s ORDER BY %s DESC LIMIT 1 OFFSET %d", index, tableName, order, limit + 1)
+	err := db.QueryRow(query).Scan(&value)
+
+	switch {
+    case err == sql.ErrNoRows:
+            return 0
+    case err != nil:
+            fail(err)
+    }
+
+	return value
+}
+
 func main() {
 	if len(os.Args) < 6 {
 		fail(fmt.Errorf("Usage: <user> <password> <host> <port> <database>"))
@@ -258,11 +270,12 @@ func main() {
 		fail(err)
 	}
 
-	// TODO: Update every second...
-	t := NewTailer(db, 0, "sys_log", "tstamp", "tstamp")
+	startVal := determineStartValue(db, 200, "sys_log", "tstamp", "tstamp")
+
+	t := NewTailer(db, 200, startVal, "sys_log", "tstamp", "tstamp")
 
 	for {
-		t.Tail(200)
+		t.Tail()
 		<-time.After(1 * time.Second)
 	}
 
